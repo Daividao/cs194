@@ -44,44 +44,34 @@ def align_low_resolution(to_be_aligned, reference, metric):
     return best_aligned, best_x, best_y
 
 def align_high_resolution(to_be_aligned, reference, metric):
-    def helper(to_be_aligned, reference):
-        nonlocal recursive_level
-        nonlocal best_aligned
-        recursive_level += 1
-
-        height, width = to_be_aligned.shape
-        
-        resized_best_shifted = None
-        if recursive_level < 6:
-            to_be_aligned_rescaled = sk.transform.rescale(to_be_aligned, 0.5)
-            reference_rescaled = sk.transform.rescale(reference, 0.5)
-            resized_best_shifted = helper(to_be_aligned_rescaled, reference_rescaled)
+    best_aligned = None
+    previous_best_x, previous_best_y = -1, -1
+    for scale in reversed(range(6)):
+        to_be_aligned_scaled = sk.transform.rescale(to_be_aligned, (1/2)**scale)
+        reference_scaled = sk.transform.rescale(reference, (1/2)**scale)
         
         best_score = float("-inf")
         best_x, best_y = -1, -1
-        for x in range(-3, 3):
-            for y in range(-3, 3):
+        
+        for x in range(-5, 5):
+            for y in range(-5, 5):
                 xx, yy = x, y
-                if resized_best_shifted:
-                    xx = resized_best_shifted[0] * 2 + xx
-                    yy = resized_best_shifted[1] * 2 + yy
+                if scale != 5:
+                    xx = previous_best_x * 2 + xx
+                    yy = previous_best_y * 2 + yy
                     
-                shifted = np.roll(to_be_aligned, xx, axis=1)
+                shifted = np.roll(to_be_aligned_scaled, xx, axis=1)
                 shifted = np.roll(shifted, yy, axis=0)
 
-                score = metric_score_ncc(shifted, reference)
+                score = metric_score_ncc(shifted, reference_scaled)
 
                 if score > best_score:
                     best_score = score
                     best_x, best_y = xx, yy
                     best_aligned = shifted
-        return (best_x, best_y)
-    
-    recursive_level = 0
-    best_aligned = None
-    best_shifted = helper(to_be_aligned, reference)
-    
-    return best_aligned, best_shifted[0], best_shifted[1]
+        previous_best_x, previous_best_y = best_x, best_y
+        
+    return best_aligned, previous_best_x, previous_best_y
 
 def produce(image_file_path, align_func, metric):
     im = read_image(image_file_path)
@@ -108,6 +98,31 @@ def produce(image_file_path, align_func, metric):
     
     return im_out, (gx, gy), (rx, ry) 
 
+def produce_emir(image_file_path, align_func, metric):
+    im = read_image(image_file_path)
+    # compute the height of each part (just 1/3 of total)
+    height = np.floor(im.shape[0] / 3.0).astype(np.int)
+
+    # separate color channels
+    b = im[:height]
+    g = im[height: 2*height]
+    r = im[2*height: 3*height]
+
+    # David crops images
+    height, width = b.shape
+    b = b[int(height*0.1):int(height*0.9), int(width*0.1):int(width*0.9)]
+    g = g[int(height*0.1):int(height*0.9), int(width*0.1):int(width*0.9)]
+    r = r[int(height*0.1):int(height*0.9), int(width*0.1):int(width*0.9)]
+    
+    # align the images
+    ab, bx, by = align_func(b, g, metric)
+    ar, rx, ry = align_func(r, g, metric)
+    
+    # create a color image
+    im_out = np.dstack([ar, ab, g])
+    
+    return im_out, (bx, by), (rx, ry) 
+
 def main():
     for file in os.listdir("data"):
         # read images with low resolution
@@ -127,11 +142,19 @@ def main():
             im_in_path = os.path.join("data", file)
             im_out_path = "out/" + file[:-len(".tif")] + ".jpg"
             print(im_out_path)
-            im_out, (gx, gy), (rx, ry) = produce(im_in_path, align_high_resolution, metric_score_ncc)
-            f = open(im_out_path + ".displacement.txt", "w")
-            f.write("green:" + str((gx, gy)) + ",")
-            f.write("red:" + str((rx, ry)))
-            f.close()
-            write_image(im_out, im_out_path)
-            
+            if "emir" in im_out_path:
+                im_out, (bx, by), (rx, ry) = produce_emir(im_in_path, align_high_resolution, metric_score_ncc)
+                f = open(im_out_path + ".displacement.txt", "w")
+                f.write("blue:" + str((bx, by)) + ",")
+                f.write("red:" + str((rx, ry)))
+                f.close()
+                write_image(im_out, im_out_path)
+            else:
+                im_out, (gx, gy), (rx, ry) = produce(im_in_path, align_high_resolution, metric_score_ncc)
+                f = open(im_out_path + ".displacement.txt", "w")
+                f.write("green:" + str((gx, gy)) + ",")
+                f.write("red:" + str((rx, ry)))
+                f.close()
+                write_image(im_out, im_out_path)
+                   
 main()
